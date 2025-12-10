@@ -2,6 +2,7 @@ import os
 import torch
 import random
 import numpy as np
+from datetime import datetime
 
 class Config:
     # --- Paths ---
@@ -13,7 +14,11 @@ class Config:
     # Output
     PROCESSED_DIR = 'data/processed_audio/'
     FULL_CSV = 'data/full_dataset_with_folds.csv'
-
+    
+    # --- NEW: Model and Report Paths ---
+    SAVED_MODELS_DIR = 'results/saved_models'
+    REPORT_DIR = 'results/classification_report'
+    
     # --- Classes ---
     CLASSES = [
         'Asthma', 'Bronchiectasis', 'Bronchiolitis', 'COPD', 
@@ -77,6 +82,9 @@ class Config:
             if not os.path.exists(p):
                 raise FileNotFoundError(f"❌ Missing required path: {p}")
         os.makedirs(Config.PROCESSED_DIR, exist_ok=True)
+        # NEW PATHS
+        os.makedirs(Config.SAVED_MODELS_DIR, exist_ok=True)
+        os.makedirs(Config.REPORT_DIR, exist_ok=True)
 
 
 class OmicsConfig:

@@ -7,11 +7,41 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from sklearn.metrics import classification_report, accuracy_score, f1_score, confusion_matrix
+from datetime import datetime
 
 from config import Config
 from dataset import AudioClassifierDataset
 from models import AudioEncoder, ClassifierHead
 from utils import EarlyStopping 
+
+def create_report_entry_baseline(fold_metrics):
+    """Generates a single-row DataFrame for the final baseline report."""
+    now = datetime.now()
+    timestamp = now.strftime("%m_%d_%H_%M")
+    
+    # Hyperparameters & Setup
+    data = {
+        'run_type': ['audio_baseline'],
+        'timestamp': [timestamp],
+        'seed': [Config.SEED],
+        'folds': [Config.NUM_FOLDS],
+        'epochs_max': [30], # Defined in script
+        'patience': [5],    # Defined in script
+        'batch_size': [Config.BATCH_SIZE],
+        'lr_encoder': ['1e-4'],
+        'lr_head': ['1e-3'],
+        'device': [str(Config.DEVICE)],
+        'audio_mels': [Config.N_MELS],
+        'audio_mfcc': [Config.N_MFCC]
+    }
+    
+    # Results (Mean +/- Std)
+    for metric_name, values in fold_metrics.items():
+        mean_val = np.mean(values)
+        std_val = np.std(values)
+        data[metric_name] = [f"{mean_val*100:.2f} (+/- {std_val*100:.2f})"]
+
+    return pd.DataFrame(data)
 
 def get_weighted_sampler(df, generator):
     class_counts = df['label_idx'].value_counts().sort_index()
@@ -48,6 +78,7 @@ def evaluate_patient_level(model, loader):
 
 def train_kfold():
     Config.set_seed(Config.SEED)
+    Config.check_paths() # Ensure new directories exist
     print(f"--- STARTING BASELINE EXPERIMENT (With Early Stopping) ---")
     
     if not os.path.exists(Config.FULL_CSV):
@@ -86,8 +117,8 @@ def train_kfold():
         ])
         criterion = nn.CrossEntropyLoss()
         
-        # EARLY STOPPING SETUP
-        checkpoint_path = f"checkpoint_baseline_fold_{fold}.pth"
+        # EARLY STOPPING SETUP: Use new directory
+        checkpoint_path = os.path.join(Config.SAVED_MODELS_DIR, f"checkpoint_baseline_fold_{fold}.pth")
         early_stopping = EarlyStopping(patience=5, verbose=True, path=checkpoint_path, maximize=True)
         
         EPOCHS = 30
@@ -117,6 +148,13 @@ def train_kfold():
         best_y_true, best_y_pred = evaluate_patient_level(model, val_loader)
 
         print(f"\n--- 📊 Report for Fold {fold} ---")
+        report = classification_report(
+            best_y_true, best_y_pred, 
+            labels=range(Config.NUM_CLASSES), 
+            target_names=Config.CLASSES, 
+            zero_division=0,
+            output_dict=True
+        )
         print(classification_report(
             best_y_true, best_y_pred, 
             labels=range(Config.NUM_CLASSES), 
@@ -143,15 +181,30 @@ def train_kfold():
             print(f"   ⚠️ Failed to save confusion matrix: {e}")
         # --------------------------------------
         
-        fold_metrics['accuracy'].append(accuracy_score(best_y_true, best_y_pred))
-        fold_metrics['macro_f1'].append(f1_score(best_y_true, best_y_pred, average='macro'))
-        fold_metrics['weighted_f1'].append(f1_score(best_y_true, best_y_pred, average='weighted'))
+        # Capture metrics for final report
+        fold_metrics['accuracy'].append(report['accuracy'])
+        fold_metrics['macro_f1'].append(report['macro avg']['f1-score'])
+        fold_metrics['weighted_f1'].append(report['weighted avg']['f1-score'])
+        
+        # Save final model for the fold (not just best checkpoint)
+        final_model_path = os.path.join(Config.SAVED_MODELS_DIR, f"final_baseline_fold_{fold}.pth")
+        torch.save(model.state_dict(), final_model_path)
+        print(f"   ✅ Saved Final Model to: {final_model_path}")
+        
 
     print("\n" + "="*40)
     print("        FINAL BASELINE RESULTS")
     print("="*40)
+    
+    # Generate and Save CSV Report
+    report_df = create_report_entry_baseline(fold_metrics)
+    timestamp = report_df['timestamp'][0]
+    csv_path = os.path.join(Config.REPORT_DIR, f"baseline_report_{timestamp}.csv")
+    report_df.to_csv(csv_path, index=False)
+    
     for metric_name, values in fold_metrics.items():
         print(f"{metric_name.replace('_', ' ').title():<15}: {np.mean(values)*100:.2f}% (+/- {np.std(values)*100:.2f})")
+    print(f"\n✅ Saved final report to: {csv_path}")
     print("="*40)
 
 if __name__ == "__main__":

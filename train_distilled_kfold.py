@@ -7,11 +7,43 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from sklearn.metrics import classification_report, accuracy_score, f1_score, confusion_matrix
+from datetime import datetime
 
 from config import Config
 from dataset import DistilledAudioDataset
 from models import AudioEncoder, ClassifierHead, DistillationProjector
 from utils import EarlyStopping 
+
+def create_report_entry_distilled(fold_metrics, max_lambda, rampup_epochs):
+    """Generates a single-row DataFrame for the final distilled report."""
+    now = datetime.now()
+    timestamp = now.strftime("%m_%d_%H_%M")
+    
+    # Hyperparameters & Setup
+    data = {
+        'run_type': ['distilled_audio'],
+        'timestamp': [timestamp],
+        'seed': [Config.SEED],
+        'folds': [Config.NUM_FOLDS],
+        'epochs_max': [40], # Defined in script
+        'patience': [8],    # Defined in script
+        'batch_size': [Config.BATCH_SIZE],
+        'lr_model': ['1e-4'],
+        'lr_projector': ['1e-3'],
+        'distill_lambda': [max_lambda],
+        'rampup_epochs': [rampup_epochs],
+        'device': [str(Config.DEVICE)],
+        'audio_mels': [Config.N_MELS],
+        'audio_mfcc': [Config.N_MFCC]
+    }
+    
+    # Results (Mean +/- Std)
+    for metric_name, values in fold_metrics.items():
+        mean_val = np.mean(values)
+        std_val = np.std(values)
+        data[metric_name] = [f"{mean_val*100:.2f} (+/- {std_val*100:.2f})"]
+
+    return pd.DataFrame(data)
 
 def get_weighted_sampler(df, generator):
     class_counts = df['label_idx'].value_counts().sort_index()
@@ -48,6 +80,7 @@ def evaluate_patient_level_distilled(model, loader):
 
 def train_distilled_kfold():
     Config.set_seed(Config.SEED)
+    Config.check_paths() # Ensure new directories exist
     print(f"--- STARTING CORRECTED MASKED DISTILLATION ---")
     
     if not os.path.exists(Config.FULL_CSV): return
@@ -93,8 +126,9 @@ def train_distilled_kfold():
         ce_loss_fn = nn.CrossEntropyLoss()
         distill_loss_fn = nn.CosineEmbeddingLoss(margin=0.0, reduction='none') # REDUCTION NONE IS KEY
         
-        checkpoint_path = f"checkpoint_corrected_fold_{fold}.pth"
-        early_stopping = EarlyStopping(patience=8, verbose=True, path=checkpoint_path, maximize=True)
+        # EARLY STOPPING SETUP: Use new directory
+        checkpoint_path = os.path.join(Config.SAVED_MODELS_DIR, f"checkpoint_distilled_fold_{fold}.pth")
+        early_stopping = EarlyStopping(patience=6, verbose=True, path=checkpoint_path, maximize=True)
         
         EPOCHS = 40
         
@@ -155,6 +189,10 @@ def train_distilled_kfold():
         best_y_true, best_y_pred = evaluate_patient_level_distilled(model, val_loader)
 
         print(f"\n--- 📊 Report for Fold {fold} ---")
+        report = classification_report(best_y_true, best_y_pred, 
+                                    labels=range(Config.NUM_CLASSES), 
+                                    target_names=Config.CLASSES, zero_division=0,
+                                    output_dict=True)
         print(classification_report(best_y_true, best_y_pred, 
                                     labels=range(Config.NUM_CLASSES), 
                                     target_names=Config.CLASSES, zero_division=0))
@@ -169,15 +207,29 @@ def train_distilled_kfold():
             plt.close()
         except: pass
         
-        fold_metrics['accuracy'].append(accuracy_score(best_y_true, best_y_pred))
-        fold_metrics['macro_f1'].append(f1_score(best_y_true, best_y_pred, average='macro'))
-        fold_metrics['weighted_f1'].append(f1_score(best_y_true, best_y_pred, average='weighted'))
+        # Capture metrics for final report
+        fold_metrics['accuracy'].append(report['accuracy'])
+        fold_metrics['macro_f1'].append(report['macro avg']['f1-score'])
+        fold_metrics['weighted_f1'].append(report['weighted avg']['f1-score'])
+        
+        # Save final model for the fold (not just best checkpoint)
+        final_model_path = os.path.join(Config.SAVED_MODELS_DIR, f"final_distilled_fold_{fold}.pth")
+        torch.save(model.state_dict(), final_model_path)
+        print(f"   ✅ Saved Final Model to: {final_model_path}")
 
     print("\n" + "="*40)
     print("      FINAL CORRECTED RESULTS")
     print("="*40)
+    
+    # Generate and Save CSV Report
+    report_df = create_report_entry_distilled(fold_metrics, MAX_LAMBDA, RAMPUP_EPOCHS)
+    timestamp = report_df['timestamp'][0]
+    csv_path = os.path.join(Config.REPORT_DIR, f"distilled_report_{timestamp}.csv")
+    report_df.to_csv(csv_path, index=False)
+
     for metric_name, values in fold_metrics.items():
         print(f"{metric_name.replace('_', ' ').title():<15}: {np.mean(values)*100:.2f}% (+/- {np.std(values)*100:.2f})")
+    print(f"\n✅ Saved final report to: {csv_path}")
     print("="*40)
 
 if __name__ == "__main__":
