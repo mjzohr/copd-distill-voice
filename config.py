@@ -15,16 +15,26 @@ class Config:
     PROCESSED_DIR = 'data/processed_audio/'
     FULL_CSV = 'data/full_dataset_with_folds.csv'
     
-    # --- NEW: Model and Report Paths ---
+    # --- Model and Report Paths ---
     SAVED_MODELS_DIR = 'results/saved_models'
     REPORT_DIR = 'results/classification_report'
     
-    # --- Classes ---
-    CLASSES = [
-        'Asthma', 'Bronchiectasis', 'Bronchiolitis', 'COPD', 
-        'Healthy', 'LRTI', 'Pneumonia', 'URTI'
-    ]
+    # --- 3-CLASS CONFIGURATION ---
+    # The model will now output 3 logits.
+    CLASSES = ['COPD', 'Healthy', 'Other']
     NUM_CLASSES = len(CLASSES)
+
+    # Aggregation Map: Raw Diagnosis -> Target Class
+    CLASS_MAPPING = {
+        'COPD': 'COPD',
+        'Healthy': 'Healthy',
+        'Asthma': 'Other',
+        'Bronchiectasis': 'Other',
+        'Bronchiolitis': 'Other',
+        'LRTI': 'Other',
+        'Pneumonia': 'Other',
+        'URTI': 'Other'
+    }
 
     # --- Audio Parameters ---
     SAMPLE_RATE = 22050
@@ -48,29 +58,23 @@ class Config:
     # --- REPRODUCIBILITY UTILS ---
     @staticmethod
     def set_seed(seed=42):
-        """Sets the seed for the entire environment."""
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-        
-        # Deterministic Algo (Caution: may be slower)
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
-        
         os.environ['PYTHONHASHSEED'] = str(seed)
         print(f"✅ Random seed set to {seed}")
 
     @staticmethod
     def seed_worker(worker_id):
-        """Worker init function for DataLoaders to ensure reproducible data augmentation."""
         worker_seed = torch.initial_seed() % 2**32
         np.random.seed(worker_seed)
         random.seed(worker_seed)
         
     @staticmethod
     def get_generator(seed=42):
-        """Returns a torch generator for deterministic Sampling/Shuffling."""
         g = torch.Generator()
         g.manual_seed(seed)
         return g
@@ -82,13 +86,12 @@ class Config:
             if not os.path.exists(p):
                 raise FileNotFoundError(f"❌ Missing required path: {p}")
         os.makedirs(Config.PROCESSED_DIR, exist_ok=True)
-        # NEW PATHS
         os.makedirs(Config.SAVED_MODELS_DIR, exist_ok=True)
         os.makedirs(Config.REPORT_DIR, exist_ok=True)
 
 
 class OmicsConfig:
-    # --- Omics Specifics ---
+    # --- Omics Specifics (Teacher remains Binary: Healthy vs Severe) ---
     CLINICAL_PATH = "data/proteomic/raw/data_1_10_22/clinical_data/COPDGene_P1P2P3_Flat_SM_NS_Mar20.txt"
     TRAIN_CSV_PATH = "data/proteomic/processed/original/x_train.csv"
     TEST_CSV_PATH = "data/proteomic/processed/original/x_test.csv"

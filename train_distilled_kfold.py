@@ -111,7 +111,18 @@ def train_distilled_kfold():
         val_ds = DistilledAudioDataset(val_df, target_path)
         
         sampler = get_weighted_sampler(train_df, generator=g)
-        train_loader = DataLoader(train_ds, batch_size=Config.BATCH_SIZE, sampler=sampler, shuffle=False, worker_init_fn=Config.seed_worker, generator=g)
+        
+        # --- FIX: ADDED drop_last=True TO AVOID BATCH NORM CRASH ON SIZE 1 BATCHES ---
+        train_loader = DataLoader(
+            train_ds, 
+            batch_size=Config.BATCH_SIZE, 
+            sampler=sampler, 
+            shuffle=False, 
+            worker_init_fn=Config.seed_worker, 
+            generator=g,
+            drop_last=True 
+        )
+        
         val_loader = DataLoader(val_ds, batch_size=Config.BATCH_SIZE, shuffle=False, worker_init_fn=Config.seed_worker, generator=g)
         
         encoder = AudioEncoder()

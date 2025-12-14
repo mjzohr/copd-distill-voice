@@ -10,13 +10,12 @@ import warnings
 try:
     from config import Config
 except ImportError:
-    # Fallback if config not found (rare)
     pass
 
 warnings.filterwarnings("ignore")
 
 def load_and_merge_metadata():
-    print("--- 1. Loading Metadata ---")
+    print("--- 1. Loading Metadata & Applying 3-Class Mapping ---")
     try:
         diag = pd.read_csv(Config.DIAG_FILE, names=['pid', 'disease'], header=None)
         diag['pid'] = pd.to_numeric(diag['pid'], errors='coerce')
@@ -31,11 +30,19 @@ def load_and_merge_metadata():
 
     meta = pd.merge(demo, diag, on='pid', how='inner').dropna(subset=['pid'])
     
+    # --- NEW: Apply 3-Class Mapping Here ---
+    # Map raw strings (e.g., 'Asthma') to aggregated classes (e.g., 'Other')
+    meta['target_class'] = meta['disease'].map(Config.CLASS_MAPPING)
+    
+    # Drop rows that somehow didn't map (though CLASS_MAPPING covers all ICBHI classes)
+    meta = meta.dropna(subset=['target_class'])
+    
+    # Create Numeric Label Index (0, 1, 2)
     class_to_idx = {name: idx for idx, name in enumerate(Config.CLASSES)}
-    meta = meta[meta['disease'].isin(Config.CLASSES)]
-    meta['label_idx'] = meta['disease'].map(class_to_idx)
+    meta['label_idx'] = meta['target_class'].map(class_to_idx)
     
     print(f"✅ Metadata ready: {len(meta)} patients.")
+    print(f"   Class Counts: {meta['target_class'].value_counts().to_dict()}")
     return meta
 
 def check_annotation_overlap(start_sec, end_sec, event_df):
@@ -49,7 +56,6 @@ def check_annotation_overlap(start_sec, end_sec, event_df):
 def process_audio(meta_df):
     print(f"--- 2. Slicing Audio (Overlap: {Config.OVERLAP*100}%) ---")
     
-    # Deterministic sorting
     files = sorted([f for f in os.listdir(Config.AUDIO_DIR) if f.endswith('.wav')])
     records = []
     
@@ -59,6 +65,11 @@ def process_audio(meta_df):
         except ValueError: continue
 
         if pid not in meta_df['pid'].values: continue
+
+        # Retrieve the aggregated class label for this patient
+        patient_meta = meta_df[meta_df['pid'] == pid].iloc[0]
+        label_idx = patient_meta['label_idx']
+        disease_str = patient_meta['target_class']
 
         file_path = os.path.join(Config.AUDIO_DIR, filename)
         try:
@@ -72,6 +83,17 @@ def process_audio(meta_df):
                 event_df = pd.read_csv(txt_path, sep='\t', names=['start', 'end', 'c', 'w'])
             except: pass
         
+        # Helper to add record
+        def add_record(slice_name, c, w):
+            records.append({
+                'filename': slice_name, 
+                'pid': pid, 
+                'crackles': c, 
+                'wheezes': w,
+                'label_idx': label_idx,
+                'disease': disease_str # Stores 'COPD', 'Healthy', or 'Other'
+            })
+
         total_samples = len(audio)
         if total_samples < Config.TARGET_LEN:
             padding = Config.TARGET_LEN - total_samples
@@ -79,7 +101,7 @@ def process_audio(meta_df):
             slice_name = f"{filename.replace('.wav', '')}_0.wav"
             sf.write(os.path.join(Config.PROCESSED_DIR, slice_name), slice_audio, Config.SAMPLE_RATE)
             c, w = check_annotation_overlap(0, Config.DURATION, event_df)
-            records.append({'filename': slice_name, 'pid': pid, 'crackles': c, 'wheezes': w})
+            add_record(slice_name, c, w)
         else:
             for start_idx in range(0, total_samples - Config.TARGET_LEN + 1, Config.STEP_SIZE):
                 end_idx = start_idx + Config.TARGET_LEN
@@ -91,20 +113,22 @@ def process_audio(meta_df):
                 
                 slice_name = f"{filename.replace('.wav', '')}_{start_idx}.wav"
                 sf.write(os.path.join(Config.PROCESSED_DIR, slice_name), slice_audio, Config.SAMPLE_RATE)
-                records.append({'filename': slice_name, 'pid': pid, 'crackles': c, 'wheezes': w})
+                add_record(slice_name, c, w)
 
     return pd.DataFrame(records)
 
 def assign_folds(records_df, meta_df):
     print(f"--- 3. Assigning {Config.NUM_FOLDS} Folds (Stratified Group) ---")
-    full_df = pd.merge(records_df, meta_df, on='pid', how='left')
+    
+    # Just merge demographics (age/sex) back in; disease/label is already in records_df
+    meta_subset = meta_df[['pid', 'age', 'sex']] 
+    full_df = pd.merge(records_df, meta_subset, on='pid', how='left')
     full_df['fold'] = -1
     
-    # REPRODUCIBLE SPLIT USING CONFIG SEED
     sgkf = StratifiedGroupKFold(n_splits=Config.NUM_FOLDS, shuffle=True, random_state=Config.SEED)
     
     X = full_df.index
-    y = full_df['label_idx']
+    y = full_df['label_idx'] # Stratify on the new 3-class labels
     groups = full_df['pid']
     
     for fold_idx, (train_idx, val_idx) in enumerate(sgkf.split(X, y, groups)):
@@ -114,7 +138,7 @@ def assign_folds(records_df, meta_df):
     print(f"✅ Saved Master Dataset to {Config.FULL_CSV}")
 
 if __name__ == "__main__":
-    Config.set_seed(Config.SEED) # Use Clean Config Call
+    Config.set_seed(Config.SEED)
     Config.check_paths()
     meta = load_and_merge_metadata()
     records = process_audio(meta)

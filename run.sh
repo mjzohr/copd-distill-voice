@@ -20,6 +20,8 @@ else
     echo "[Step 1/4] ✅ Audio Data already processed. Skipping..."
 fi
 
+python preprocessing.py
+
 # --- Step 2: Train Omics Teacher ---
 # Trains the Neural Omics Encoder (not the XGBoost baseline) to learn protein representations.
 # Output: omics_encoder_best.pth
